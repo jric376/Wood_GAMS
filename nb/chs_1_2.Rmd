@@ -1,0 +1,512 @@
+---
+title: "Wood, GAMs, Notes - Ch. 1-3"
+output:
+  html_document: 
+    code_folding: hide
+---
+
+```{r work_dir, include = FALSE}
+library(lattice)
+library(purrr)
+library(magrittr)
+library(gamair)
+library(mgcv)
+library(broom)
+library(ggplot2)
+library(scales)
+library(patchwork)
+
+data(hubble)
+```
+
+# Linear Models
+
+## Example with Hubble constant dataset
+
+The textbook's first example involves Hubble data (and thus an explicitly linear model). Specifically, a model that expresses the observed velocity of the expanding universe ($y_i$) in terms of a Hubble constant ($\beta$), the observed distance our galaxy and another ($x_i$), and a random error term ($\epsilon_i$).
+
+$y_i = \beta x_i + \epsilon_i$; $i = 1...`r nrow(hubble)`$
+
+We can then caclulate the approximate age of the universe using the constant, by first converting $\beta$ from Mega-parsecs to units of $s^{-1}$, then taking its reciprocal:
+
+```{r hub_load, collapse=TRUE}
+univAgeFromHub <- function(hubConst) {
+  age <- (hubConst/3.09e19)^-1
+  
+  age/(60^2*24*365)
+}
+
+hub_lm <- lm(y ~ x - 1, data = hubble)
+hub_lm_trim <- lm(y ~ x - 1, data = hubble[-c(3,15),])
+
+tidy(hub_lm)
+glance(hub_lm)
+
+par(mfcol = c(2,2))
+plot(hub_lm)
+```
+
+Might consider dropping data points #3 and #15, but as discussed in Wood, it doesn't "drastically" improve the model results ($r^2$ from $0.94$ to $0.97$:
+
+```{r hub_lm1}
+hub_lm_trim %$%
+  list(tidy(.),
+       glance(.))
+```
+
+```{r hub_age}
+list(hub_lm,
+     hub_lm_trim) %>% 
+  map_dbl(coefficients) %>% 
+  map_dbl(univAgeFromHub) %>% 
+  map_dbl(~.x/1e9) %>% 
+  map_chr(comma, accuracy = 0.01) %>% 
+  map_chr(paste, "bn years")
+```
+
+<!-- ### Adding a distributional assumption -->
+
+<!-- Nonetheless, we can use the example to show how to estimate whether a hypothesized value for the linear coefficient is consistent with the data. Let's say we expect a 1-hub decrease in the highway rating per additional liter of engine displacement (i.e. coefficient = -10). Then, using a t-test... -->
+
+<!-- ```{r ttest} -->
+<!-- hypo_val <- -1 # hub/L -->
+<!-- t.stat <- (summary(model_0)$coefficients["displ",][[1]] - hypo_val) / summary(model_0)$coefficients["displ",][[2]] -->
+<!-- pt(t.stat,df=nrow(hub)-1)*2 # to account for probability in either direction of null hypothesis -->
+<!-- ``` -->
+
+<!-- we see that the probability of the data reflecting the assumed relationship between displacement and highway mileage rating is vanishingly small. We can compute confidence intervals ($95\%$ here) for the data using the ```qt``` function. The upper bound on the intervals seem to reflect the outliers in the residual plots above. -->
+
+<!-- ```{r} -->
+<!-- coef(model_0)[["displ"]]*(1 + qt(c(0.025,0.975), df = nrow(hub)-1)) -->
+<!-- ``` -->
+
+<!-- ### Refining the model -->
+
+<!-- The number of cylinders has, as expected, a somewhat discontinuous relationship with the other three plotted variables. Displacement varies non-linearly with both city and highway mileage ratings, which are themselves directly proportional. Fancier pairwise output can be achieved with -->
+<!-- ```{echo=FALSE} -->
+<!-- GGally::ggpairs(select_if(hub, is.numeric) %>% select(-year)) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- pairs(select_if(hub, is.numeric) %>% select(-year)) -->
+<!-- ``` -->
+
+<!-- However, of all variables in the hub dataset, we will try adding the class of vehicle as another predictor variable to improve the residuals' distribution. Without getting too unreasonble w.r.t. outlier removal, we also omit some high-mileage vehicles and two-seaters to see if model residuals improve. -->
+
+<!-- ```{r,collapse=TRUE} -->
+<!-- hub_slim <- filter(hub, hwy < 40 & class != "2seater") %>%  -->
+<!--   mutate(class = as.factor(as.character(class)))  -->
+<!-- model_1 <- lm(hwy~displ+class, data = hub_slim) -->
+<!-- t.stat2 <- (summary(model_1)$coefficients["displ",][[1]] - hypo_val) / summary(model_1)$coefficients["displ",][[2]] -->
+<!-- pt(t.stat2,df=nrow(hub_slim)-1)*2 # to account for probability in either direction of null hypothesis -->
+<!-- par(mfrow = c(2,2)) -->
+<!-- plot(model_1) -->
+<!-- ``` -->
+
+<!-- Between the first and second models, ```hwy ~ displ``` and ```hwy ~ displ+class```, we improved the adjusted R-squared from 0.585 to 0.837. That is, we explained an additional $25\%$ of the variability in the hwy variable. Nonetheless, the minivan, pickup, and SUV p-values suggest that these parameters do not vary significantly from 0. -->
+
+<!-- ```{r, echo = FALSE} -->
+<!-- summary(model_0)[c("coefficients", "adj.r.squared")] -->
+<!-- summary(model_1)[c("coefficients", "adj.r.squared")] -->
+<!-- ``` -->
+
+<!-- Given this situation, we can use an ANOVA test to compare a model based on ```class`` with a null one. If the probability of obtaining the calculated F statistic is very small, then we have evidence the null hypothesis may not be plausible. -->
+
+<!-- ```{r} -->
+<!-- model_null <- lm(hwy~1, hub_slim) -->
+<!-- model_2 <- lm(hwy~class, hub_slim) -->
+<!-- anova(model_null,model_2) -->
+<!-- ``` -->
+
+<!-- Looks like this is indeed the case, as the probability is $<2.2\cdot10^{-16}$.  -->
+
+<!-- Finally, we can check the AIC of these two models against a null model, but first we'll re-run the first model with a trimmed dataset. -->
+
+<!-- ```{r} -->
+<!-- model_0 <- lm(hwy~displ, hub_slim) -->
+<!-- AIC(model_0, model_1, model_2,model_null) -->
+<!-- ``` -->
+
+<!-- Looks like taking into account engine displacement and vehicle class provides the best estimate of highway mileage rating among the models we've tried. -->
+
+<!-- ## Exercises -->
+
+<!-- ### Least squares estimate of fit -->
+
+<!-- ```{r ex1_1} -->
+<!-- ex.1 <- data.frame(km = c(1,3,4,5), hr = c(0.1,0.4,0.5,0.6)) -->
+<!-- summary(lm(km ~ hr, ex.1)) -->
+<!-- ``` -->
+
+<!-- ### Backwards model selection + levels plot -->
+
+<!-- ```{r ex1_8} -->
+<!-- lm1 <- lm(loss ~ tens + I(tens^2) + I(tens^3) + -->
+<!--                   hard + I(hard^2) + I(hard^3), MASS::Rubber) -->
+<!-- # summary(lm1) -->
+<!-- # summary(lm2 <- lm(loss ~ poly(tens, 3) + hard + I(hard^3), MASS::Rubber)) -->
+<!-- summary(lm3 <- lm(loss ~ poly(tens, 3) + hard, MASS::Rubber)) -->
+<!-- # summary(lm4 <- lm(loss ~ tens + I(tens^2) + hard, MASS::Rubber)) -->
+<!-- # summary(lm5 <- lm(loss ~ tens + hard, MASS::Rubber)) -->
+<!-- slm1 <- step(lm1, loss ~ 1, direction = "backward", trace = -1) -->
+
+<!-- hard <- seq(min(MASS::Rubber$hard), max(MASS::Rubber$hard)) -->
+<!-- tens <- seq(min(MASS::Rubber$tens), max(MASS::Rubber$tens)) -->
+<!-- grid <- expand.grid(hard = hard, tens = tens) -->
+<!-- grid[, "loss"] <- c(predict(lm3, grid)) -->
+<!-- # levelplot(loss ~ tens*hard, data = grid, cuts = 30) -->
+<!-- ggplot(grid, aes(x = tens, y = hard, fill = loss)) + -->
+<!--   geom_tile() + -->
+<!--   labs(x = bquote("Tensile strength ("~kg/~m^2~")"), y = "Hardness (Shore)", -->
+<!--        title = "Rubber Loss in g/hr") + -->
+<!--   scale_fill_distiller(name = "g/hr", palette = "RdPu") + -->
+<!--   scale_x_continuous(expand = c(0,0)) + -->
+<!--   scale_y_continuous(expand = c(0,0)) + -->
+<!--   theme(axis.line = element_blank(), -->
+<!--         panel.background = element_blank()) -->
+<!-- ``` -->
+
+<!-- ### Estimating parameter effects with interaction plot -->
+
+<!-- ```{r ex1_9, message=FALSE} -->
+<!-- attach(warpbreaks) -->
+<!-- lm(breaks~tension:wool) -->
+<!-- interaction.plot(tension, wool, breaks) -->
+<!-- new_warpbrk <- ddply(warpbreaks, .(tension,wool), -->
+<!--                            summarise, val = mean(breaks)) -->
+<!-- ggplot(warpbreaks, aes(x = tension, y = breaks, -->
+<!--                        fill = wool)) + -->
+<!--   geom_violin(aes(), colour = "gray35") + -->
+<!--   geom_point(aes(group = wool),  -->
+<!--              colour = "black", shape = 21, -->
+<!--              size = 3, alpha = 1/2, -->
+<!--              position=position_jitterdodge(dodge.width=1)) + -->
+<!--   theme_bw() -->
+<!-- detach(warpbreaks) -->
+<!-- ``` -->
+
+<!-- ### Estimating whether cars' braking distance depends on speed -->
+
+<!-- ```{r ex1_10, message=FALSE} -->
+<!-- attach(cars) -->
+<!-- step(lm(dist ~ speed + I(speed^2)), lm(dist~1), direction = "backward") -->
+<!-- lm_ex10 <- lm(dist ~ I(speed^2)) -->
+
+<!-- hypothet_val <- 0 # represents null hypothesis of no speed-dependence at all -->
+<!-- t_ex10 <- (summary(lm_ex10)$coefficients[2,1] - hypothet_val) / summary(lm_ex10)$coefficients[2,2] -->
+<!-- pt(t_ex10,df=nrow(cars)-1) # probability of getting the same hypothet_val if the null hypothesis is true -->
+
+<!-- cars <- cbind(cars, predict(lm_ex10, cars, se.fit = TRUE)) %>%  -->
+<!--   select(-df,-residual.scale) %>%  -->
+<!--   mutate(speed = speed*5280/3600, # converts mph to ft/s -->
+<!--          sec_pred = fit / speed, -->
+<!--          se_sec_pred = se.fit / speed) -->
+<!-- mean(cars$sec_pred); mean(cars$se_sec_pred) -->
+<!-- detach(cars) -->
+<!-- ``` -->
+
+<!-- # Generalized Linear Models (GLMs) -->
+
+<!-- ### Binomial heart disease model -->
+
+<!-- ```{r binom} -->
+<!-- ha_data <- data.frame(ck = seq.int(20,460,40), -->
+<!--                       ha = c(2,13,30,30,21,19,18,13,19,15,7,8), -->
+<!--                       ok = c(88,26,8,5,0,1,1,1,1,0,0,0)) %>%  -->
+<!--   mutate(p = ha / ha+ok) -->
+<!-- binom_0 <- glm(cbind(ha,ok)~ck, family = binomial, ha_data) -->
+
+<!-- prop_dev_explnd <- (binom_0$null.deviance - binom_0$deviance)/binom_0$null.deviance -->
+<!-- 1 - pchisq(binom_0$deviance, binom_0$df.residual) -->
+
+<!-- par(mfrow=c(2,2)) -->
+<!-- plot(binom_0) -->
+
+<!-- binom_2 <- glm(cbind(ha,ok)~poly(ck, 3), family = binomial, ha_data) -->
+
+<!-- prop_dev_explnd <- (binom_2$null.deviance - binom_2$deviance)/binom_2$null.deviance -->
+<!-- 1 - pchisq(binom_2$deviance, binom_2$df.residual) -->
+
+<!-- par(mfrow=c(2,2)) -->
+<!-- plot(binom_2) -->
+
+<!-- anova(binom_0, binom_2, test = "Chisq") -->
+<!-- ``` -->
+
+<!-- Poor residuals vs. fitted values and curvy Q-Q suggest higher-order model may be needed. Particularly, a cubic model. -->
+
+<!-- ### Poisson regression AIDS epidemic -->
+
+<!-- ```{r poiss} -->
+<!-- yrs <- seq.int(1981,1993) -->
+<!-- epid_data <- data.frame(yr = yrs, -->
+<!--                         cases = c(12,14,33,50,67,74,123,141, -->
+<!--                                   165,204,253,246,240)) -->
+<!-- poiss_0 <- glm(cases~yr, family = "poisson", epid_data) -->
+
+<!-- par(mfrow=c(2,2)) -->
+<!-- plot(poiss_0) -->
+
+<!-- poiss_1 <- glm(cases~yr + I(yr^2), family = "poisson", epid_data) -->
+
+<!-- par(mfrow=c(2,2)) -->
+<!-- plot(poiss_1) -->
+
+<!-- anova(poiss_0, poiss_1, test = "Chisq") -->
+
+<!-- poiss_1.coef <- summary(poiss_1)$coef -->
+<!-- print(c("95% interval for first-order coefficient:")) -->
+<!-- print(c(poiss_1.coef[2,1] + 1.96*poiss_1.coef[2,2], -->
+<!--       poiss_1.coef[2,1] - 1.96*poiss_1.coef[2,2])) -->
+
+<!-- epid_est0 <- predict(poiss_0,data.frame(yr=seq(1981,1993,length=100)), se=TRUE) %>%  -->
+<!--   as.data.frame() %>% select(-residual.scale) %>%  -->
+<!--   mutate(fit_upr = fit+2*se.fit, # have to undo log link that is assumed in predict.glm -->
+<!--          fit_lwr = fit-2*se.fit) %>%  -->
+<!--   mutate_all(exp) %>%  -->
+<!--   mutate(yr = seq(1981,1993,length=100)) -->
+
+<!-- epid_est1 <- predict(poiss_1,data.frame(yr=seq(1981,1993,length=100)), se=TRUE) %>%  -->
+<!--   as.data.frame() %>% select(-residual.scale) %>%  -->
+<!--   mutate(fit_upr = fit+2*se.fit, # have to undo log link that is assumed in predict.glm -->
+<!--          fit_lwr = fit-2*se.fit) %>%  -->
+<!--   mutate_all(exp) %>%  -->
+<!--   mutate(yr = seq(1981,1993,length=100)) -->
+
+<!-- ggplot(data = epid_data, aes(x = yr)) + -->
+<!--   geom_ribbon(data = epid_est0, -->
+<!--               aes(ymin = fit_lwr, ymax = fit_upr), -->
+<!--               alpha = 1/2, fill = "#fdbb84") + -->
+<!--   geom_ribbon(data = epid_est1, -->
+<!--               aes(ymin = fit_lwr, ymax = fit_upr), -->
+<!--               alpha = 1/2, fill = "#99d8c9") + -->
+<!--   geom_point(aes(y = cases), shape = 21) + -->
+<!--   geom_line(data = epid_est0, aes(y = fit), lty = 2) + -->
+<!--   geom_line(data = epid_est1, aes(y = fit)) + -->
+<!--   labs(x = NULL, y = "Cases", -->
+<!--        title = "Determining the Slowing Spread of Disease", -->
+<!--        subtitle = "with GLM") + -->
+<!--   scale_x_continuous(breaks = seq(1982,1992,2)) + -->
+<!--   scale_fill_manual() -->
+<!-- ``` -->
+
+<!-- Accounting for quadratic term results in very different estimates for first-order coefficient; that is, the early growth rate of new cases of disease that begin to spread in an environment where no response to the epidemic has been mounted. There is also a dramatically different predictiong of the long-term trends for the spread as well. -->
+
+<!-- ### Log-linear models for categorical data -->
+
+<!-- ```{r log_lin} -->
+<!-- faith_data <- data.frame(val = c(435,147,375,134), -->
+<!--                          gender = c("F","F","M","M"), -->
+<!--                          blvr = c(1,0,1,0)) -->
+
+<!-- loglin_0 <- glm(val~gender+blvr, faith_data, family = poisson) -->
+<!-- loglin_1 <- glm(val~gender*blvr, faith_data, family = poisson) -->
+
+<!-- step(loglin_1,loglin_0) -->
+
+<!-- anova(loglin_0, loglin_1, test="Chisq") -->
+<!-- ``` -->
+
+<!-- Stick with the independent model ```loglin_0```, testing with both ANOVA and AIC. -->
+<!-- ### Quasi-likelihood for fish egg spawning rates -->
+
+<!-- ```{r quasi_lik} -->
+<!-- data("sole") -->
+<!-- sole_scaled <- sole %>%  -->
+<!--   mutate(off = log(a.1 - a.0), -->
+<!--          mn = (a.1 - a.0)/2, -->
+<!--          t = scale(t), -->
+<!--          la = scale(la), -->
+<!--          lo = scale(lo)) -->
+
+<!-- quas_0 <- glm(eggs ~ offset(off) + lo + la + t + I(lo*la) + I(lo^2) + I(la^2) + -->
+<!--                 I(t^2) + I(lo*t) + I(la*t) + I(lo^3) + I(la^3) + I(t^3) + I(lo*la*t) + -->
+<!--                 I(lo^2*la) + I(lo^2*t) + I(lo*la^2) + I(la^2*t) + I(lo*t^2) + I(la*t^2) + -->
+<!--                 mn + I(mn*t) + I(t^2*mn), -->
+<!--               family = quasi(link = log, variance = "mu"), data = sole_scaled) -->
+<!-- quas_new <- update(quas_0, ~.-I(lo*t)-I(lo*la*t)-I(lo^2*t)-I(lo*t^2)) # add on each new term to remove -->
+<!-- # summary(quas_new) -->
+<!-- anova(quas_0, quas_new, test = "F") -->
+
+<!-- par(mfrow = c(1,2)) -->
+<!-- plot(fitted(quas_new)^0.5, sole_scaled$eggs^0.5) -->
+<!-- plot(fitted(quas_new)^0.5, residuals(quas_new)) -->
+<!-- ``` -->
+
+<!-- Some issues in mapping spawning rates as continuous, smooth function. Worked in the present case, but not necessarily a widely applicable approach to less straightforward distributions. -->
+
+<!-- ## Exercises -->
+
+<!-- ### Non-Gaussian error models (e.g. binary data) -->
+
+<!-- ```{r, ex2_2} -->
+<!-- df2_2 <- list() -->
+
+<!-- for(i in seq(1,50)) { -->
+<!--   n <- 100; m <- 10 -->
+<!--   x <- runif(n) -->
+<!--   lp <- 3*x-1 -->
+<!--   mu <- binomial()$linkinv(lp) -->
+<!--   y <- rbinom(1:n, m, mu) -->
+<!--   mod2_2 <- glm(y/m~x, family = binomial, weights = rep(m,n)) -->
+<!--   rsd <- mod2_2$residuals -->
+<!--   emp_cdf <- (1:length(rsd)-.5)/length(rsd) -->
+<!--   fv <- mod2_2$fitted.values -->
+<!--   df2_2 <- rbind.data.frame(df2_2, cbind(rsd, emp_cdf, fv))  -->
+<!--   # par(mfrow = c(2,2)) -->
+<!--   # plot(mod2_2) -->
+<!-- } -->
+
+<!-- ggplot(df2_2, aes(x = rsd, y = emp_cdf)) + -->
+<!--   geom_hex(bins = 8) + -->
+<!--   theme_bw() + -->
+<!--   theme(panel.grid = element_blank(), -->
+<!--         panel.border = element_blank()) -->
+
+<!-- sort2_2 <- df2_2 %>%  -->
+<!--   arrange(fv) %>%  -->
+<!--   mutate(del_rsd = rsd - lag(rsd)) %>%  -->
+<!--   fill(del_rsd, .direction = "up") -->
+
+<!-- ggplot(sort2_2, aes(x = fv, y = del_rsd)) + -->
+<!--   geom_line() + -->
+<!--   scale_y_continuous(limits = c(-n/3, n/3)) -->
+<!-- ``` -->
+
+<!-- ### Inverse link with harrier data -->
+
+<!-- For part a), we assume constant $m$ in $E(c_i)=\frac{ad^m_i}{1 + ad^m_i}$ and need to show that the reciprocal link, $\mu_i=\beta_0 + \beta_1/x_{1,i}$ is useful. -->
+
+<!-- ```{r ex2_8} -->
+<!-- df2_9 <- list() -->
+<!-- data(harrier) -->
+<!-- for(i in seq(0.1,6,0.05)) { -->
+<!--   glm2_9 <- glm(Consumption.Rate ~ I(1/Grouse.Density^i), data = harrier, -->
+<!--                 family = quasi(link = inverse, variance = "mu")) -->
+<!--   dev <- glm2_9$deviance -->
+<!--   # fv <- glm2_9$fitted.values -->
+<!--   # res <- glm2_9$residuals -->
+<!--   df2_9  <- rbind.data.frame(df2_9, cbind(i,dev)) -->
+<!-- } -->
+
+<!-- # ggplot(df2_9, aes(x = i, y = dev)) + -->
+<!-- #   geom_line() -->
+
+<!-- optim_pwr <- df2_9 %>% -->
+<!--   top_n(-1, dev) %>%  -->
+<!--   select(i) %>% as.numeric() -->
+
+<!-- glm2_8 <- glm(Consumption.Rate ~ I(1/Grouse.Density^optim_pwr), data = harrier, -->
+<!--   family = quasi(link = inverse, variance = "mu")) -->
+<!-- glm2_8.null <- glm(Consumption.Rate ~ 1, data = harrier, -->
+<!--   family = quasi(link = inverse, variance = "mu")) -->
+
+<!-- par(mfrow = c(2,2)) -->
+<!-- plot(glm2_8) -->
+<!-- anova(glm2_8.null, glm2_8, test = "F") -->
+
+<!-- harrier <- cbind(harrier, predict(glm2_8, harrier, se.fit = TRUE, -->
+<!--                                   type = "response")) %>%  -->
+<!--   mutate(fit_upr = fit + 2*se.fit, -->
+<!--          fit_lwr = fit - 2*se.fit) -->
+
+<!-- ggplot(harrier, aes(x = Grouse.Density)) + -->
+<!--   geom_point(aes(y = Consumption.Rate)) + -->
+<!--   geom_ribbon(aes(ymax = fit_upr, ymin = fit_lwr), -->
+<!--               alpha = 1/3) + -->
+<!--   geom_line(aes(y = fit)) + -->
+<!--   labs(x = bquote("Grouse /"~km^2), y = "Consumption Rate", -->
+<!--        title = "Modeling Grouse Consumption as fn of Density", -->
+<!--        subtitle = "w inverse link GLM") -->
+<!-- ``` -->
+
+<!-- Minimum deviance at $i=3.25$. High fit errors at larger $Grouse.density$ values, but it is clear from ANOVA that taking the density to a higher power improves model fit. -->
+
+<!-- ### Lung disease and Poisson -->
+
+<!-- ```{r ex2_9a} -->
+<!-- library(datasets) -->
+<!-- data(UKLungDeaths) -->
+<!-- df2_9 <- cbind.data.frame(dt = seq.int(1974, 1980, length.out = 72), -->
+<!--                           ldeaths = as.numeric(ldeaths)) %>%  -->
+<!--   mutate(toy_rad = trunc(12*(dt - trunc(dt)) + 1)*(2*pi/12), -->
+<!--          elaps = dt - min(dt)) -->
+<!-- ``` -->
+
+<!-- We have to take the expected value function -->
+
+<!-- ($E(\mathrm{deaths}_i) = \beta_0 + \beta_1 t_i + \alpha sin(2\pi\mathrm{toy}_i/12 + \phi)$) -->
+
+<!-- and make it suitable for a GLM. This requires turning it into an exponential as follows: -->
+
+<!-- ($E(\mathrm{deaths}_i) = \beta_0 + \beta_1 t_i + \alpha \cdot\left[sin(2\pi\cdot\mathrm{toy}_i/12)cos(\phi) + cos(2\pi\cdot\mathrm{toy}_i/12)sin(\phi)\right]$) -->
+
+<!-- ```{r ex2_9b} -->
+<!-- glm2_9 <- glm(ldeaths ~ elaps + sin(toy_rad) + cos(toy_rad), -->
+<!--               family=poisson(link = identity), data = df2_9) -->
+<!-- # summary(glm2_9) -->
+
+<!-- df2_9 <- mutate(df2_9, fitted = fitted(glm2_9)) -->
+<!-- ggplot(df2_9, aes(x = dt, y = ldeaths)) + -->
+<!--   geom_point() + -->
+<!--   geom_line(aes(y = fitted), lty = 2) + -->
+<!--   labs(x = NULL, y = "Deaths", -->
+<!--        title = "Modeling lung-related deaths") -->
+<!-- par(mfrow = c(2,2)) -->
+<!-- plot(glm2_9) -->
+<!-- ``` -->
+
+<!-- There is still heterogeneity in the residuals that needs resolving. Solutions suggest an auto-regressive model. -->
+
+<!-- ### Refitting AIDS data from "poiss" chunk -->
+
+<!-- ```{r ex2_10} -->
+<!-- summary(poiss_1) -->
+<!-- offs <-  seq(poiss_1.coef[2,1] - 4*poiss_1.coef[2,2], -->
+<!--              poiss_1.coef[2,1] + 4*poiss_1.coef[2,2], -->
+<!--              length = 200) -->
+<!-- offs <- cbind.data.frame(offs,  -->
+<!--                          sapply(offs, -->
+<!--                                 function(i) logLik(glm(cases ~ offset(i*yr) + I(yr^2), -->
+<!--                                                        data = epid_data)))) -->
+<!-- names(offs) <- c("offs", "loglik") -->
+<!-- ggplot(offs, aes(x = offs, y = loglik)) + -->
+<!--   geom_line() -->
+<!-- ``` -->
+
+<!-- Not getting symmetric log likelihood.... -->
+<!-- # Generalized Additive Models (GAMs) -->
+
+<!-- ## Mackerel Egg Survey -->
+
+<!-- ```{r mack_dat} -->
+<!-- library(MASS) -->
+<!-- data("mack") -->
+<!-- mack <- mack %>%  -->
+<!--   mutate(log_net_area = log(net.area)) -->
+
+<!-- gm <- gam(egg.count ~ s(lon,lat, bs="ts", k=100) + s(I(b.depth^.5), bs="ts") + -->
+<!--             s(c.dist, bs="ts") + s(salinity, bs="ts") + s(temp.surf, bs="ts") + -->
+<!--             s(temp.20m, bs="ts") + offset(log_net_area), data = mack, -->
+<!--           family = "poisson", scale=-1, gamma=1.4) -->
+<!-- gm1 <- update(gm, .~.-s(salinity, bs="ts"), mack) -->
+<!-- gm1a <- update(gm, .~.-s(c.dist, bs="ts")-s(temp.surf, bs="ts"), mack) -->
+<!-- # gm2 <- gam(egg.count ~ s(lon,lat, bs="ts", k=40) + s(I(b.depth^.5), bs="ts") + -->
+<!-- #             s(c.dist, bs="ts") + s(temp.surf, bs="ts") + -->
+<!-- #             s(temp.20m, bs="ts") + offset(log_net_area), data = mack, -->
+<!-- #           family = negative.binomial(1), control = gam.control(maxit=100), gamma=1.4) -->
+<!-- ``` -->
+
+<!-- ```{r mack_plot} -->
+<!-- par(mfrow = c(3,2)) -->
+<!-- plot(gm) -->
+<!-- par(mfrow = c(3,2)) -->
+<!-- plot(gm1) -->
+<!-- par(mfrow = c(2,2)) -->
+<!-- plot(gm1a) -->
+<!-- gam.check(gm) -->
+<!-- gam.check(gm1) -->
+<!-- gam.check(gm1a) -->
+<!-- ``` -->
+
+
